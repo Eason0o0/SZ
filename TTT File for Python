@@ -1,0 +1,122 @@
+# 好像基本 ok，还差一点点
+import re
+import os
+from tkinter import Tk, Button, filedialog, messagebox
+from docx import Document
+from docx.shared import RGBColor
+import openpyxl
+
+def extract_codes(doc):
+    pattern = re.compile(r'S[AT]\d{3}-\d+')
+    codes = set()
+
+    # Extract codes from paragraphs
+    for para in doc.paragraphs:
+        codes.update(pattern.findall(para.text))
+
+    # Extract codes from tables
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                codes.update(pattern.findall(cell.text))
+
+    return codes
+
+def read_excel_data(filepath):
+    wb = openpyxl.load_workbook(filepath)
+    ws = wb.active
+    data = {}
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        data[row[0]] = row[6]
+    return data
+
+def process_word_file(doc, excel_data):
+    pattern = re.compile(r'S[AT]\d{3}-\d+')
+    codes_to_report = set()
+
+    def process_text(text):
+        start_index = 0
+        while start_index < len(text):
+            match = pattern.search(text, start_index)
+            if match:
+                code = match.group()
+                if code in excel_data:
+                    status = excel_data[code]
+                    if status in ('报废', '限制使用'):
+                        codes_to_report.add((code, status))
+                        yield (text[start_index:match.start()], False)
+                        yield (code, True)
+                        start_index = match.end()
+                    else:
+                        yield (text[start_index:match.start()], False)
+                        yield (code, False)
+                        start_index = match.end()
+                else:
+                    codes_to_report.add((code, '该设备不存在'))
+                    yield (text[start_index:match.start()], False)
+                    yield (code, True)
+                    start_index = match.end()
+            else:
+                yield (text[start_index:], False)
+                break
+
+    for para in doc.paragraphs:
+        runs = list(process_text(para.text))
+        para.clear()
+        for text, is_colored in runs:
+            run = para.add_run(text)
+            if is_colored:
+                run.font.color.rgb = RGBColor(255, 0, 0)
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                runs = list(process_text(cell.text))
+                cell._element.clear_content()
+                if not cell.paragraphs:
+                    cell.add_paragraph()
+                for text, is_colored in runs:
+                    run = cell.paragraphs[0].add_run(text)
+                    if is_colored:
+                        run.font.color.rgb = RGBColor(255, 0, 0)
+
+    return codes_to_report
+
+def select_file():
+    filepath = filedialog.askopenfilename(filetypes=[("Word files", "*.docx")])
+    if filepath:
+        process_file(filepath)
+
+def process_file(filepath):
+    # Read Word document
+    doc = Document(filepath)
+
+    # Extract codes from the document
+    codes = extract_codes(doc)
+
+    # Read Excel data
+    excel_data = read_excel_data(r"C:\Users\MSI-NB\Desktop\TTE.xlsx")  # Replace with the path of your Excel file
+
+    # Process Word document
+    codes_to_report = process_word_file(doc, excel_data)
+
+    # Save processed Word document
+    output_path = os.path.join(os.path.dirname(filepath), f"Checked_{os.path.basename(filepath)}")
+    doc.save(output_path)
+
+    # Show report in a messagebox
+    report_text = "\n".join([f"{code} {status}" for code, status in codes_to_report])
+    messagebox.showinfo("Report", report_text)
+
+# Create a Tkinter GUI
+root = Tk()
+root.title("Code Checker")
+root.geometry("300x100")
+
+select_button = Button(root, text="选择文件", command=select_file)
+select_button.pack(pady=(20, 10))
+
+check_button = Button(root, text="Check", command=process_file)
+check_button.pack()
+
+root.mainloop()
